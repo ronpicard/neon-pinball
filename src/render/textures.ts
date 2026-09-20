@@ -12,7 +12,10 @@ const PLAYFIELD_PX_HEIGHT = 2048
 const PLAYFIELD_PX_PER_INCH = PLAYFIELD_PX_HEIGHT / TABLE_HEIGHT_INCHES
 const PLAYFIELD_PX_WIDTH = Math.round(TABLE_WIDTH_INCHES * PLAYFIELD_PX_PER_INCH)
 
-const BACKGLASS_SIZE = 1024
+// The translite is drawn to the cabinet's actual 26 x 17 in aspect, so its mesh needs no UV offset.
+const BACKGLASS_ASPECT = 26 / 17
+const BACKGLASS_WIDTH = 1024
+const BACKGLASS_HEIGHT = Math.round(BACKGLASS_WIDTH / BACKGLASS_ASPECT)
 const CABINET_SIDE_WIDTH = 1024
 const CABINET_SIDE_HEIGHT = 512
 const APRON_WIDTH = 1024
@@ -20,8 +23,8 @@ const APRON_HEIGHT = 256
 const FLOOR_SIZE = 512
 const FLOOR_TILES = 8
 const FLOOR_SPECKLES = 4000
-const SCORE_WIDTH = 512
-const SCORE_HEIGHT = 128
+const SCORE_WIDTH = 1024
+const SCORE_HEIGHT = 256
 
 // -------------------------------------------------------------------------------------------
 // Palette (retro arcade neon)
@@ -711,7 +714,9 @@ export function makePlayfieldTexture(table: Table): THREE.CanvasTexture {
 // -------------------------------------------------------------------------------------------
 
 const BACKGLASS_SEED = 0x1057
-const BACKGLASS_STAR_COUNT = 90
+const BACKGLASS_STAR_COUNT = 70
+const BACKGLASS_HEADER_TEXT = '1UP   HI-SCORE   2UP'
+const BACKGLASS_CHEVRON_SIZE = 26
 
 function drawPalm(ctx: CanvasRenderingContext2D, x: number, baseY: number, height: number): void {
   ctx.save()
@@ -734,51 +739,122 @@ function drawPalm(ctx: CanvasRenderingContext2D, x: number, baseY: number, heigh
   ctx.restore()
 }
 
-/** Backglass art: a synthwave sun over a palm-lined skyline, a floor grid, and the machine's logo. */
+/** A thin banner across the top reading `1UP   HI-SCORE   2UP` in pixel-style lettering. */
+function drawBackglassHeader(ctx: CanvasRenderingContext2D, width: number, bandHeight: number): void {
+  ctx.save()
+  ctx.fillStyle = 'rgba(4, 2, 12, 0.65)'
+  ctx.fillRect(0, 0, width, bandHeight)
+  ctx.font = `700 ${bandHeight * 0.6}px ${MONO_FONT}`
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+  ctx.shadowColor = YELLOW
+  ctx.shadowBlur = bandHeight * 0.5
+  ctx.fillStyle = YELLOW
+  ctx.fillText(BACKGLASS_HEADER_TEXT, width / 2, bandHeight / 2)
+  ctx.restore()
+}
+
+/** A checkerboard/chevron strip framing the top and bottom edges of the panel. */
+function drawChevronBorder(ctx: CanvasRenderingContext2D, width: number, height: number): void {
+  ctx.save()
+  ctx.globalAlpha = 0.8
+  for (const y of [0, height - BACKGLASS_CHEVRON_SIZE]) {
+    for (let x = 0; x < width; x += BACKGLASS_CHEVRON_SIZE * 2) {
+      ctx.fillStyle = ((x / (BACKGLASS_CHEVRON_SIZE * 2)) | 0) % 2 === 0 ? MAGENTA : CYAN
+      ctx.beginPath()
+      ctx.moveTo(x, y)
+      ctx.lineTo(x + BACKGLASS_CHEVRON_SIZE, y)
+      ctx.lineTo(x + BACKGLASS_CHEVRON_SIZE * 1.5, y + BACKGLASS_CHEVRON_SIZE)
+      ctx.lineTo(x + BACKGLASS_CHEVRON_SIZE * 0.5, y + BACKGLASS_CHEVRON_SIZE)
+      ctx.closePath()
+      ctx.fill()
+    }
+  }
+  ctx.restore()
+}
+
+/** A small pixel-art cassette tape, for arcade-era set dressing. */
+function drawPixelCassette(ctx: CanvasRenderingContext2D, x: number, y: number, cell: number, color: string): void {
+  ctx.save()
+  ctx.fillStyle = color
+  ctx.shadowColor = color
+  ctx.shadowBlur = cell * 0.8
+  ctx.globalAlpha = 0.85
+  ctx.fillRect(x, y, cell * 10, cell * 6)
+  ctx.fillStyle = BG_DEEP
+  ctx.fillRect(x + cell, y + cell, cell * 3, cell * 2)
+  ctx.fillRect(x + cell * 6, y + cell, cell * 3, cell * 2)
+  ctx.restore()
+}
+
+/**
+ * Generic retro-arcade backglass art, richly layered: a `1UP HI-SCORE 2UP` header, a banded
+ * synthwave sun over a neon perspective grid, a palm-lined city skyline, the chrome-and-neon
+ * 'NEON PINBALL' logo, pixel-art invaders, a joystick, a cassette, lightning bolts, stars, and a
+ * chevron border. Drawn to the cabinet's 26 x 17 in aspect so the translite mesh needs no UV crop.
+ */
 export function makeBackglassTexture(): THREE.CanvasTexture {
-  const size = BACKGLASS_SIZE
-  const { canvas, ctx } = makeCanvas(size, size)
+  const width = BACKGLASS_WIDTH
+  const height = BACKGLASS_HEIGHT
+  const { canvas, ctx } = makeCanvas(width, height)
   const rand = mulberry32(BACKGLASS_SEED)
 
-  const sky = ctx.createLinearGradient(0, 0, 0, size)
+  const sky = ctx.createLinearGradient(0, 0, 0, height)
   sky.addColorStop(0, '#170a34')
   sky.addColorStop(0.55, '#2a0f4a')
   sky.addColorStop(1, BG_DEEP)
   ctx.fillStyle = sky
-  ctx.fillRect(0, 0, size, size)
+  ctx.fillRect(0, 0, width, height)
 
-  drawStarfield(ctx, size, size * 0.55, rand, BACKGLASS_STAR_COUNT)
+  drawStarfield(ctx, width, height * 0.5, rand, BACKGLASS_STAR_COUNT)
 
-  const sunCx = size * 0.5
-  const sunCy = size * 0.42
-  drawSynthwaveSun(ctx, sunCx, sunCy, size * 0.26)
-  drawPerspectiveGrid(ctx, size, sunCx, sunCy + size * 0.02, size)
+  const sunCx = width * 0.5
+  const sunCy = height * 0.36
+  drawSynthwaveSun(ctx, sunCx, sunCy, height * 0.34)
+  drawPerspectiveGrid(ctx, width, sunCx, sunCy + height * 0.02, height)
 
-  const baseY = size * 0.62
+  const baseY = height * 0.62
   ctx.save()
   ctx.fillStyle = '#0a0614'
   ctx.beginPath()
   ctx.moveTo(0, baseY)
   let x = 0
-  while (x < size) {
-    const w = 30 + rand() * 70
-    const h = 40 + rand() * (size * 0.22)
+  while (x < width) {
+    const w = 26 + rand() * 60
+    const h = 32 + rand() * (height * 0.28)
     ctx.lineTo(x, baseY - h)
     ctx.lineTo(x + w, baseY - h)
     x += w
   }
-  ctx.lineTo(size, baseY)
-  ctx.lineTo(size, size)
-  ctx.lineTo(0, size)
+  ctx.lineTo(width, baseY)
+  ctx.lineTo(width, height)
+  ctx.lineTo(0, height)
   ctx.closePath()
   ctx.fill()
   ctx.restore()
 
-  for (let p = 0; p < 4; p++) {
-    drawPalm(ctx, size * (0.1 + p * 0.28) + rand() * 20, baseY, size * 0.05)
+  for (let p = 0; p < 5; p++) {
+    drawPalm(ctx, width * (0.06 + p * 0.22) + rand() * 24, baseY, height * 0.09)
   }
 
-  drawTitle(ctx, size / 2, size * 0.84, size * 0.11)
+  drawLightningStripe(ctx, { x: width * 0.06, y: height * 0.2 }, { x: width * 0.06, y: height * 0.5 }, CYAN, rand)
+  drawLightningStripe(
+    ctx,
+    { x: width * 0.94, y: height * 0.2 },
+    { x: width * 0.94, y: height * 0.5 },
+    MAGENTA,
+    rand,
+  )
+
+  drawPixelBitmap(ctx, INVADER_BITMAP, width * 0.03, height * 0.66, PIXEL_CELL_PX * 0.8, GREEN)
+  drawPixelBitmap(ctx, INVADER_BITMAP, width * 0.87, height * 0.66, PIXEL_CELL_PX * 0.8, GREEN)
+  drawPixelJoystick(ctx, width * 0.03, height * 0.82, PIXEL_CELL_PX * 0.8, PURPLE)
+  drawPixelCassette(ctx, width * 0.85, height * 0.83, PIXEL_CELL_PX * 0.7, ORANGE)
+
+  drawTitle(ctx, width / 2, height * 0.82, height * 0.17)
+
+  drawChevronBorder(ctx, width, height)
+  drawBackglassHeader(ctx, width, height * 0.075)
 
   return finishTexture(canvas)
 }
@@ -922,6 +998,12 @@ const DOT_PITCH = 4
 const DOT_RADIUS = 1.5
 const DOT_GLOW = 5
 const DOT_THRESHOLD = 40
+const DOT_DIM_ALPHA = 0.08 // unlit dots still show, faintly, so the panel reads as a real LED grid
+const SCORE_FONT_MAX_FRACTION = 0.74 // the biggest a score may be sized, as a fraction of panel height
+const SCORE_FONT_MIN_FRACTION = 0.22
+const MESSAGE_FONT_MAX_FRACTION = 0.3
+const MESSAGE_FONT_MIN_FRACTION = 0.12
+const TEXT_FIT_WIDTH_FRACTION = 0.9 // how much of the panel width fitted text may fill
 
 interface DotMatrixLine {
   text: string
@@ -931,7 +1013,33 @@ interface DotMatrixLine {
   align: CanvasTextAlign
 }
 
-/** Renders `lines` through an offscreen mask and stipples them onto `ctx` as glowing LED dots. */
+/**
+ * The largest size (in px) for `${weight} ${size}px ${fontFamily}` that keeps `text` narrower
+ * than `maxWidthPx`, without going below `minSizePx`.
+ */
+function fitFontSize(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  fontFamily: string,
+  weight: number,
+  maxWidthPx: number,
+  maxSizePx: number,
+  minSizePx: number,
+): number {
+  let size = maxSizePx
+  while (size > minSizePx) {
+    ctx.font = `${weight} ${size}px ${fontFamily}`
+    if (ctx.measureText(text).width <= maxWidthPx) break
+    size -= 2
+  }
+  return size
+}
+
+/**
+ * Renders `lines` through an offscreen mask and stipples the whole panel as a real dot-matrix
+ * grid: every dot position gets a dim, always-visible base, and the ones the mask lights up glow
+ * brighter on top of it.
+ */
 function drawDotMatrix(
   ctx: CanvasRenderingContext2D,
   width: number,
@@ -953,13 +1061,13 @@ function drawDotMatrix(
   ctx.save()
   ctx.fillStyle = color
   ctx.shadowColor = color
-  ctx.shadowBlur = DOT_GLOW
   for (let py = DOT_PITCH / 2; py < height; py += DOT_PITCH) {
     for (let px = DOT_PITCH / 2; px < width; px += DOT_PITCH) {
       const idx = (Math.floor(py) * width + Math.floor(px)) * 4
       const brightness = data[idx] ?? 0
-      if (brightness <= DOT_THRESHOLD) continue
-      ctx.globalAlpha = Math.min(1, brightness / 255)
+      const lit = brightness > DOT_THRESHOLD
+      ctx.globalAlpha = lit ? Math.min(1, brightness / 255) : DOT_DIM_ALPHA
+      ctx.shadowBlur = lit ? DOT_GLOW : 0
       ctx.beginPath()
       ctx.arc(px, py, DOT_RADIUS, 0, Math.PI * 2)
       ctx.fill()
@@ -974,7 +1082,11 @@ export interface ScoreDisplay {
   set(score: number, ball: number, message: string | null): void
 }
 
-/** Builds the amber dot-matrix score display, 512x128, matching a real machine's DMD panel. */
+/**
+ * Builds the amber/orange plasma dot-matrix score display, 1024x256, the machine's scoreboard:
+ * a real dot grid with dim unlit dots visible, chunky digits filling most of the panel, and a
+ * small 'BALL n' readout in the corner. A `message` replaces the score line, auto-shrunk to fit.
+ */
 export function makeScoreDisplay(): ScoreDisplay {
   const width = SCORE_WIDTH
   const height = SCORE_HEIGHT
@@ -1004,25 +1116,44 @@ export function makeScoreDisplay(): ScoreDisplay {
   const set = (score: number, ball: number, message: string | null): void => {
     paintPanel()
     if (message) {
-      const messageFont = `700 ${height * 0.28}px ${MONO_FONT}`
+      const text = message.toUpperCase()
+      const size = fitFontSize(
+        ctx,
+        text,
+        MONO_FONT,
+        700,
+        width * TEXT_FIT_WIDTH_FRACTION,
+        height * MESSAGE_FONT_MAX_FRACTION,
+        height * MESSAGE_FONT_MIN_FRACTION,
+      )
+      const messageFont = `700 ${size}px ${MONO_FONT}`
       drawDotMatrix(
         ctx,
         width,
         height,
-        [{ text: message.toUpperCase(), x: width / 2, y: height * 0.64, font: messageFont, align: 'center' }],
+        [{ text, x: width / 2, y: height * 0.58, font: messageFont, align: 'center' }],
         AMBER,
       )
     } else {
-      const scoreText = Math.max(0, Math.floor(score)).toLocaleString('en-US')
-      const scoreFont = `700 ${height * 0.34}px ${MONO_FONT}`
+      const scoreText = score <= 0 ? '00' : Math.max(0, Math.floor(score)).toLocaleString('en-US')
+      const scoreSize = fitFontSize(
+        ctx,
+        scoreText,
+        MONO_FONT,
+        700,
+        width * 0.9,
+        height * SCORE_FONT_MAX_FRACTION,
+        height * SCORE_FONT_MIN_FRACTION,
+      )
+      const scoreFont = `700 ${scoreSize}px ${MONO_FONT}`
       const ballFont = `700 ${height * 0.14}px ${MONO_FONT}`
       drawDotMatrix(
         ctx,
         width,
         height,
         [
-          { text: scoreText, x: width * 0.06, y: height * 0.66, font: scoreFont, align: 'left' },
-          { text: `BALL ${ball}`, x: width * 0.97, y: height * 0.92, font: ballFont, align: 'right' },
+          { text: scoreText, x: width / 2, y: height * 0.68, font: scoreFont, align: 'center' },
+          { text: `BALL ${ball}`, x: width * 0.97, y: height * 0.9, font: ballFont, align: 'right' },
         ],
         AMBER,
       )

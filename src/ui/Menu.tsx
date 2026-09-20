@@ -60,25 +60,24 @@ export default function Menu({ highScores, muted, onPlay, onToggleMute }: MenuPr
   return (
     <div className="menu-screen">
       <div className="menu-panel neon-panel">
-        <header className="menu-header">
+        <div className="menu-top-row">
           <h1 className="menu-title">NEON PINBALL</h1>
-          <p className="menu-tagline">INSERT COIN &middot; PRESS START</p>
-          <button type="button" className="primary-button play-button" onClick={onPlay}>
-            Play
-          </button>
-          <p className="how-to-line">Press Play, or hit Enter / Space.</p>
-        </header>
-
-        <div className="menu-controls">
-          <button
-            type="button"
-            className="icon-button"
-            aria-label={muted ? 'Unmute' : 'Mute'}
-            onClick={onToggleMute}
-          >
-            {muted ? <MuteIcon /> : <UnmuteIcon />}
-          </button>
+          <div className="menu-top-actions">
+            <button type="button" className="primary-button play-button" onClick={onPlay}>
+              Play
+            </button>
+            <button
+              type="button"
+              className="icon-button"
+              aria-label={muted ? 'Unmute' : 'Mute'}
+              onClick={onToggleMute}
+            >
+              {muted ? <MuteIcon /> : <UnmuteIcon />}
+            </button>
+          </div>
         </div>
+        <p className="menu-tagline">INSERT COIN &middot; PRESS START</p>
+        <p className="how-to-line pointer-only">Press Play, or hit Enter / Space.</p>
 
         <section className="panel-section" aria-label="High scores">
           <h2 className="panel-heading">High Scores</h2>
@@ -97,7 +96,7 @@ export default function Menu({ highScores, muted, onPlay, onToggleMute }: MenuPr
 
         <section className="panel-section" aria-label="Controls">
           <h2 className="panel-heading">Controls</h2>
-          <dl className="legend-list">
+          <dl className="legend-list pointer-only">
             {KEYBOARD_LEGEND.map((row) => (
               <div className="legend-row" key={row.label}>
                 <dt>{row.label}</dt>
@@ -105,9 +104,11 @@ export default function Menu({ highScores, muted, onPlay, onToggleMute }: MenuPr
               </div>
             ))}
           </dl>
-          <p className="legend-touch">
-            Touch: flipper zones, a plunger button, and a nudge button on screen.
-          </p>
+          <ul className="legend-touch-list touch-only">
+            <li>Tap the left / right side of the screen to flip</li>
+            <li>Hold LAUNCH (or the right side) to pull the plunger</li>
+            <li>NUDGE shoves the table. Too much tilts it</li>
+          </ul>
         </section>
 
         <p className="menu-credit">

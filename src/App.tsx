@@ -18,7 +18,7 @@ type Screen = 'menu' | 'play' | 'gameOver'
 const DOCKED_PANEL_MAX_FRACTION = 0.7
 
 /** Pressing the HUD camera button steps through these views in order, then wraps around. */
-const CAMERA_CYCLE: CameraView[] = ['player', 'top', 'chase']
+const CAMERA_CYCLE: CameraView[] = ['chase', 'player', 'top']
 
 function nextCameraView(current: CameraView): CameraView {
   return CAMERA_CYCLE[(CAMERA_CYCLE.indexOf(current) + 1) % CAMERA_CYCLE.length]
@@ -49,7 +49,7 @@ export default function App() {
   const [engine, setEngine] = useState<EngineApi | null>(null)
   const [hud, setHud] = useState<HudSnapshot | null>(null)
   const [message, setMessage] = useState<{ id: number; text: string } | null>(null)
-  const [cameraView, setCameraView] = useState<CameraView>('player')
+  const [cameraView, setCameraView] = useState<CameraView>('chase')
   const [paused, setPaused] = useState(false)
   const [finalScore, setFinalScore] = useState(0)
 
@@ -215,7 +215,7 @@ export default function App() {
               onToggleMute={toggleMute}
               onQuit={goToMenu}
             />
-            <TouchControls engine={engine} />
+            <TouchControls engine={engine} ballWaiting={hud?.ballWaiting ?? false} />
           </>
         )}
 

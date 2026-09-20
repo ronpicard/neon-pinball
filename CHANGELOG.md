@@ -2,6 +2,22 @@
 
 All notable changes to Neon Pinball are documented in this file, following the [Keep a Changelog](https://keepachangelog.com/) format.
 
+## [1.1.0] - 2026-09-20
+
+### Added
+
+- The machine now stands in an arcade: rows of upright cabinets with running games on their screens, neon signs, neighbouring pinball machines, and blacklight carpet.
+- The backbox is a scoreboard: a large dot-matrix display shows your score, the ball number and award messages, under new retro arcade backglass art.
+- On phones, tap the left or right side of the screen to flip, and hold `HOLD TO LAUNCH` or the right side to pull the plunger. The menu, HUD and game-over card fit small screens, notches and both orientations.
+- The game lowers its rendering cost by itself when a device cannot keep up. `?quality=high` and `?quality=low` in the address pin it.
+
+### Changed
+
+- The game opens on the low view from behind the flippers, which now also shows the scoreboard. The camera button and `C` cycle from there to the standing view and the top-down view. On a phone held upright the low view becomes the steep standing view so the whole table fits.
+- Much less glare: a gentler bloom, dimmer lamps and bumper flashes, brushed steel in place of mirror chrome, and a satin lockdown bar.
+- The ball is polished steel with hairline scratches, and it reflects the arcade around it instead of glowing white.
+- Materials look like the real thing: painted wood grain on the rails and cabinet, brushed stainless guides and legs, pebbled rubber and plastic, powder-coated steel, faint wear in the playfield lacquer, and screw heads on the plastics.
+
 ## [1.0.0] - 2026-09-20
 
 ### Added

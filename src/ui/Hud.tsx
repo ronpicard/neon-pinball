@@ -15,7 +15,7 @@ interface HudProps {
 }
 
 /** What pressing the camera button switches to next, shown so the label always reads forward. */
-const NEXT_CAMERA_LABEL: Record<CameraView, string> = { player: 'Top', top: 'Chase', chase: 'Player' }
+const NEXT_CAMERA_LABEL: Record<CameraView, string> = { chase: 'Player', player: 'Top', top: 'Chase' }
 
 function PauseIcon() {
   return (
@@ -109,7 +109,16 @@ export default function Hud({
   onToggleMute,
   onQuit,
 }: HudProps) {
-  const marquee = message ?? (hud?.ballWaiting ? 'PULL THE PLUNGER' : '')
+  // The waiting hint reads differently on touch: there is no plunger key to pull there. Both
+  // variants render at once and CSS (`.touch-only` / `.pointer-only`) shows the one that matches
+  // the pointer in use, so this never needs to know the device type itself.
+  const waitingHint = hud?.ballWaiting ? (
+    <>
+      <span className="touch-only">HOLD LAUNCH</span>
+      <span className="pointer-only">PULL THE PLUNGER</span>
+    </>
+  ) : null
+  const marquee = message ?? waitingHint
 
   return (
     <>

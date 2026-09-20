@@ -18,6 +18,15 @@ import type {
   Wall,
 } from '../game/types.ts'
 import { flipperTip, rampLength, rampPoint } from '../game/physics.ts'
+import {
+  makeBrushedMetalBump,
+  makeBrushedMetalRoughness,
+  makePebbleBump,
+  makePowderCoatBump,
+  makeScratchRoughness,
+  makeWoodBump,
+  makeWoodGrain,
+} from './materialTextures.ts'
 import { makeApronTexture, makePlayfieldTexture, PLAYFIELD_TEXTURE_INCHES } from './textures.ts'
 
 // -------------------------------------------------------------------------------------------
@@ -52,6 +61,23 @@ const RAMP_STANDOFF_STRIDE = 5
 const WALL_THICKNESS: Record<Wall['kind'], number> = { rail: 0.35, guide: 0.12, rubber: 0.25 }
 
 // -------------------------------------------------------------------------------------------
+// Material realism (SPEC.md realism pass, section R1)
+// -------------------------------------------------------------------------------------------
+
+/** Any white/near-white diffuse surface (flippers, bumper skirts, rubber) is capped at this. */
+const NEAR_WHITE = 0xd9d6d0
+/** `bumpScale` values, in inches: small enough that the maps read as texture, not topography. */
+const METAL_BUMP_SCALE = 0.015
+const WOOD_BUMP_SCALE = 0.03
+const RUBBER_BUMP_SCALE = 0.04
+const PLASTIC_BUMP_SCALE = 0.012
+const POWDER_BUMP_SCALE = 0.02
+const RAIL_WOOD_TINT = '#15121a'
+const RAIL_WOOD_GRAIN = '#2a2433'
+const PLAYFIELD_SCRATCH_REPEAT_U = 3
+const PLAYFIELD_SCRATCH_REPEAT_V = 6
+
+// -------------------------------------------------------------------------------------------
 // Timings
 // -------------------------------------------------------------------------------------------
 
@@ -65,8 +91,14 @@ const LIGHT_SHOW_BLINK_HZ = 8
 const ATTRACT_CHASE_SPEED = 0.6
 const ATTRACT_CHASE_WIDTH = 0.18
 
-const INSERT_OFF_INTENSITY = 0.08
-const INSERT_ON_INTENSITY = 2.6
+const INSERT_OFF_INTENSITY = 0.05
+/** A lamp fully "on" or blinking-on. */
+const INSERT_ON_INTENSITY = 1.3
+/**
+ * The "big flash" cap shared by the award light-show sweep, the attract chase, a standup's hit
+ * flash and a saucer's held glow: brighter than a single lamp, still capped against glare.
+ */
+const GLOW_CAP_INTENSITY = 1.5
 
 const MAX_BALLS = 8
 
@@ -124,6 +156,76 @@ function disposeAll(items: Disposable[]): void {
 }
 
 // -------------------------------------------------------------------------------------------
+// Shared material kit
+//
+// One instance per `createTableView` call, built once and handed to every builder that needs a
+// "brushed stainless", "white rubber" or "ABS plastic" look, so the underlying textures and (where
+// the colour is identical) the materials themselves are shared rather than rebuilt per part.
+// -------------------------------------------------------------------------------------------
+
+interface MaterialKit {
+  /** Guide walls, rollover wires, spinner bracket, gate wire, ramp stand-offs, plunger rod, screws. */
+  brushedMaterial: THREE.MeshStandardMaterial
+  /** White rubber: `rubber`-kind walls, post rings, slingshot bands. */
+  rubberMaterial: THREE.MeshStandardMaterial
+  /** Shared bump map for every ABS-plastic part (each keeps its own colour/emissive material). */
+  pebbleBump: THREE.CanvasTexture
+  /** Black-painted plywood for `rail`-kind walls. */
+  railWoodMaterial: THREE.MeshPhysicalMaterial
+}
+
+function createMaterialKit(envMap: THREE.Texture | null): MaterialKit & Disposable {
+  const brushedRoughness = makeBrushedMetalRoughness()
+  const brushedBump = makeBrushedMetalBump()
+  const brushedMaterial = new THREE.MeshStandardMaterial({
+    color: 0xdadde3,
+    roughness: 0.45,
+    roughnessMap: brushedRoughness,
+    metalness: 1,
+    bumpMap: brushedBump,
+    bumpScale: METAL_BUMP_SCALE,
+    envMap: envMap ?? null,
+    envMapIntensity: envMap ? 0.7 : 0,
+  })
+
+  const pebbleBump = makePebbleBump()
+  const rubberMaterial = new THREE.MeshStandardMaterial({
+    color: NEAR_WHITE,
+    roughness: 0.85,
+    bumpMap: pebbleBump,
+    bumpScale: RUBBER_BUMP_SCALE,
+  })
+
+  const railWoodColor = makeWoodGrain(RAIL_WOOD_TINT, RAIL_WOOD_GRAIN)
+  const railWoodBump = makeWoodBump()
+  const railWoodMaterial = new THREE.MeshPhysicalMaterial({
+    map: railWoodColor,
+    bumpMap: railWoodBump,
+    bumpScale: WOOD_BUMP_SCALE,
+    roughness: 0.55,
+    clearcoat: 0.25,
+    clearcoatRoughness: 0.3,
+  })
+
+  return {
+    brushedMaterial,
+    rubberMaterial,
+    pebbleBump,
+    railWoodMaterial,
+    dispose() {
+      brushedRoughness.dispose()
+      brushedBump.dispose()
+      brushedMaterial.dispose()
+      pebbleBump.dispose()
+      rubberMaterial.dispose()
+      railWoodColor.dispose()
+      railWoodBump.dispose()
+      railWoodMaterial.dispose()
+    },
+  }
+}
+
+// -------------------------------------------------------------------------------------------
 // Playfield
 // -------------------------------------------------------------------------------------------
 
@@ -146,11 +248,14 @@ function buildPlayfield(table: Table): { mesh: THREE.Mesh } & Disposable {
   const geometry = new THREE.PlaneGeometry(PLAYFIELD_TEXTURE_INCHES.width, PLAYFIELD_TEXTURE_INCHES.height)
   geometry.rotateX(-Math.PI / 2)
   const texture = makePlayfieldTexture(table)
+  const roughnessMap = makeScratchRoughness()
+  roughnessMap.repeat.set(PLAYFIELD_SCRATCH_REPEAT_U, PLAYFIELD_SCRATCH_REPEAT_V)
   const material = new THREE.MeshPhysicalMaterial({
     map: texture,
-    roughness: 0.45,
+    roughness: 0.5,
+    roughnessMap,
     clearcoat: 1,
-    clearcoatRoughness: 0.15,
+    clearcoatRoughness: 0.22,
   })
   const mesh = new THREE.Mesh(geometry, material)
   mesh.receiveShadow = true
@@ -160,6 +265,7 @@ function buildPlayfield(table: Table): { mesh: THREE.Mesh } & Disposable {
       geometry.dispose()
       material.dispose()
       texture.dispose()
+      roughnessMap.dispose()
     },
   }
 }
@@ -167,12 +273,19 @@ function buildPlayfield(table: Table): { mesh: THREE.Mesh } & Disposable {
 /** The gap, in inches, between the flippers' lowest reach and the apron's top edge. */
 const APRON_FLIPPER_CLEARANCE = 0.5
 
+interface ApronRect {
+  rightX: number
+  topY: number
+  width: number
+  depth: number
+}
+
 /**
- * The plastic apron under the flippers. Its footprint is derived from the table (not hard-coded)
- * so this view stays generic: it runs from just below the flippers' resting tips to the bottom edge,
- * and stops at the plunger zone's left edge so the shooter lane stays open.
+ * The apron's footprint, derived from the table (not hard-coded): it runs from just below the
+ * flippers' resting tips to the bottom edge, and stops at the plunger zone's left edge so the
+ * shooter lane stays open. Shared by `buildApron` (the mesh) and `buildScrews` (corner screws).
  */
-function buildApron(table: Table): { mesh: THREE.Mesh } & Disposable {
+function computeApronRect(table: Table): ApronRect {
   // Just below the lowest point the flippers reach (their tips at rest), so they are never covered.
   let topY = 0
   for (const flipper of table.flippers) {
@@ -183,10 +296,23 @@ function buildApron(table: Table): { mesh: THREE.Mesh } & Disposable {
   const rightX = table.plunger.zone.min.x
   const width = Math.max(0.1, rightX)
   const depth = Math.max(0.1, table.height - topY)
+  return { rightX, topY, width, depth }
+}
+
+/** The powder-coated steel apron under the flippers, keeping its printed art texture. */
+function buildApron(table: Table): { mesh: THREE.Mesh } & Disposable {
+  const { rightX, topY, width, depth } = computeApronRect(table)
 
   const geometry = new THREE.BoxGeometry(width, 0.3, depth)
   const texture = makeApronTexture()
-  const material = new THREE.MeshStandardMaterial({ map: texture, roughness: 0.4, metalness: 0.1 })
+  const bumpMap = makePowderCoatBump()
+  const material = new THREE.MeshStandardMaterial({
+    map: texture,
+    bumpMap,
+    bumpScale: POWDER_BUMP_SCALE,
+    roughness: 0.6,
+    metalness: 0.3,
+  })
   const mesh = new THREE.Mesh(geometry, material)
   mesh.position.set(localX(table, rightX / 2), 1, localZ(table, (topY + table.height) / 2))
   mesh.castShadow = true
@@ -197,6 +323,7 @@ function buildApron(table: Table): { mesh: THREE.Mesh } & Disposable {
       geometry.dispose()
       material.dispose()
       texture.dispose()
+      bumpMap.dispose()
     },
   }
 }
@@ -205,48 +332,26 @@ function buildApron(table: Table): { mesh: THREE.Mesh } & Disposable {
 // Walls (rail / guide / rubber), including the arch
 // -------------------------------------------------------------------------------------------
 
-function wallMaterialFor(kind: Wall['kind'], envMap: THREE.Texture | null): THREE.Material {
-  if (kind === 'rail') {
-    return new THREE.MeshPhysicalMaterial({
-      color: 0x0c0912,
-      roughness: 0.3,
-      clearcoat: 0.6,
-      clearcoatRoughness: 0.25,
-      envMap: envMap ?? null,
-      envMapIntensity: envMap ? 0.4 : 0,
-    })
-  }
-  if (kind === 'guide') {
-    return new THREE.MeshStandardMaterial({
-      color: 0xb9c2cc,
-      roughness: 0.35,
-      metalness: 0.9,
-      envMap: envMap ?? null,
-      envMapIntensity: envMap ? 0.8 : 0,
-    })
-  }
-  return new THREE.MeshStandardMaterial({ color: 0xe9e5e1, roughness: 0.85 })
+/**
+ * Rail (black-painted wood), guide (brushed stainless) and rubber (white, pebbled) all come from
+ * the shared `MaterialKit`, so this view builds no wall material of its own and disposes none:
+ * the kit owns them.
+ */
+function wallMaterialFor(kind: Wall['kind'], kit: MaterialKit): THREE.Material {
+  if (kind === 'rail') return kit.railWoodMaterial
+  if (kind === 'guide') return kit.brushedMaterial
+  return kit.rubberMaterial
 }
 
-function buildWalls(table: Table, envMap: THREE.Texture | null): { group: THREE.Group } & Disposable {
+function buildWalls(table: Table, kit: MaterialKit): { group: THREE.Group } & Disposable {
   const group = new THREE.Group()
   const disposables: Disposable[] = []
 
   const materials: Record<Wall['kind'], THREE.Material> = {
-    rail: wallMaterialFor('rail', envMap),
-    guide: wallMaterialFor('guide', envMap),
-    rubber: wallMaterialFor('rubber', envMap),
+    rail: wallMaterialFor('rail', kit),
+    guide: wallMaterialFor('guide', kit),
+    rubber: wallMaterialFor('rubber', kit),
   }
-  disposables.push(materials.rail, materials.guide, materials.rubber)
-
-  const chromeMaterial = new THREE.MeshStandardMaterial({
-    color: 0xdadde3,
-    roughness: 0.38,
-    metalness: 1,
-    envMap: envMap ?? null,
-    envMapIntensity: envMap ? 1 : 0,
-  })
-  disposables.push(chromeMaterial)
 
   for (const wall of table.walls) {
     const thickness = WALL_THICKNESS[wall.kind]
@@ -266,7 +371,7 @@ function buildWalls(table: Table, envMap: THREE.Texture | null): { group: THREE.
     if (wall.kind === 'rail') {
       const stripHeight = 0.08
       const stripGeometry = new THREE.BoxGeometry(length, stripHeight, thickness * 0.7)
-      const strip = new THREE.Mesh(stripGeometry, chromeMaterial)
+      const strip = new THREE.Mesh(stripGeometry, kit.brushedMaterial)
       strip.position.set(mid.x, WALL_HEIGHT - stripHeight / 2, mid.y)
       strip.rotation.y = angle
       strip.castShadow = true
@@ -305,12 +410,13 @@ function buildWalls(table: Table, envMap: THREE.Texture | null): { group: THREE.
 // Posts
 // -------------------------------------------------------------------------------------------
 
-function buildPosts(table: Table, envMap: THREE.Texture | null): { group: THREE.Group } & Disposable {
+function buildPosts(
+  table: Table,
+  envMap: THREE.Texture | null,
+  kit: MaterialKit,
+): { group: THREE.Group } & Disposable {
   const group = new THREE.Group()
   const disposables: Disposable[] = []
-
-  const ringMaterial = new THREE.MeshStandardMaterial({ color: 0xf2efe9, roughness: 0.8 })
-  disposables.push(ringMaterial)
 
   table.posts.forEach((post, index) => {
     const color = ACCENT_CYCLE[index % ACCENT_CYCLE.length]
@@ -319,7 +425,9 @@ function buildPosts(table: Table, envMap: THREE.Texture | null): { group: THREE.
       color,
       transparent: true,
       opacity: 0.55,
-      roughness: 0.2,
+      roughness: 0.45,
+      bumpMap: kit.pebbleBump,
+      bumpScale: PLASTIC_BUMP_SCALE,
       emissive: color,
       emissiveIntensity: 0.25,
       envMap: envMap ?? null,
@@ -330,8 +438,9 @@ function buildPosts(table: Table, envMap: THREE.Texture | null): { group: THREE.
     body.castShadow = true
     body.receiveShadow = true
 
+    // The rubber ring uses the shared `kit.rubberMaterial`; only the post body is disposed here.
     const ringGeometry = new THREE.TorusGeometry(post.radius * 0.85, Math.min(0.09, post.radius * 0.3), 10, 20)
-    const ring = new THREE.Mesh(ringGeometry, ringMaterial)
+    const ring = new THREE.Mesh(ringGeometry, kit.rubberMaterial)
     ring.rotation.x = Math.PI / 2
     ring.position.set(localX(table, post.pos.x), table.ballRadius, localZ(table, post.pos.y))
     ring.castShadow = true
@@ -348,7 +457,14 @@ function buildPosts(table: Table, envMap: THREE.Texture | null): { group: THREE.
 // -------------------------------------------------------------------------------------------
 
 /** A bumper lamp's glow on the playfield while idle. The scene is in inches, so lights use linear falloff. */
-const BUMPER_LIGHT_IDLE = 3
+const BUMPER_LIGHT_IDLE = 1.4
+/** Added to the idle light while the bumper's lamp is blinking. */
+const BUMPER_LIGHT_BLINK_BONUS = 1.5
+/** Added to the idle light for a hit's brief flash; the flash is binary, so this is also its max. */
+const BUMPER_LIGHT_HIT_BONUS = 5
+const BUMPER_CAP_IDLE_INTENSITY = 0.5
+const BUMPER_CAP_BLINK_INTENSITY = 0.9
+const BUMPER_CAP_FLASH_INTENSITY = 1.8
 
 interface BumperVisual {
   id: string
@@ -363,13 +479,25 @@ interface BumperVisual {
 function buildBumpers(
   table: Table,
   envMap: THREE.Texture | null,
+  kit: MaterialKit,
 ): { group: THREE.Group; visuals: BumperVisual[] } & Disposable {
   const group = new THREE.Group()
   const disposables: Disposable[] = []
   const visuals: BumperVisual[] = []
 
-  const skirtMaterial = new THREE.MeshStandardMaterial({ color: 0xf3f1ee, roughness: 0.5 })
-  const bodyMaterial = new THREE.MeshStandardMaterial({ color: 0x1c1626, roughness: 0.4, metalness: 0.2 })
+  // Skirt and body are moulded ABS plastic, sharing the kit's pebbled bump map.
+  const skirtMaterial = new THREE.MeshStandardMaterial({
+    color: NEAR_WHITE,
+    roughness: 0.45,
+    bumpMap: kit.pebbleBump,
+    bumpScale: PLASTIC_BUMP_SCALE,
+  })
+  const bodyMaterial = new THREE.MeshStandardMaterial({
+    color: 0x1c1626,
+    roughness: 0.45,
+    bumpMap: kit.pebbleBump,
+    bumpScale: PLASTIC_BUMP_SCALE,
+  })
   disposables.push(skirtMaterial, bodyMaterial)
 
   table.bumpers.forEach((bumper, index) => {
@@ -440,8 +568,14 @@ function updateBumpers(visuals: BumperVisual[], game: GameState, events: readonl
   for (const v of visuals) {
     const flashing = v.flashT > 0
     const lamp: LampState = game.lamps[v.id] ?? 'off'
-    v.capMaterial.emissiveIntensity = flashing ? 2.4 : lamp === 'blink' ? 1.1 : 0.6
-    v.light.intensity = BUMPER_LIGHT_IDLE + (lamp === 'blink' ? 3 : 0) + (flashing ? 10 : 0)
+    v.capMaterial.emissiveIntensity = flashing
+      ? BUMPER_CAP_FLASH_INTENSITY
+      : lamp === 'blink'
+        ? BUMPER_CAP_BLINK_INTENSITY
+        : BUMPER_CAP_IDLE_INTENSITY
+    const blinkBonus = lamp === 'blink' ? BUMPER_LIGHT_BLINK_BONUS : 0
+    const hitBonus = flashing ? BUMPER_LIGHT_HIT_BONUS : 0
+    v.light.intensity = BUMPER_LIGHT_IDLE + blinkBonus + hitBonus
     v.ring.position.y = flashing ? v.ringBaseY - 0.25 : v.ringBaseY
   }
 }
@@ -474,13 +608,14 @@ function buildFlatTriangle(p0: THREE.Vector3, p1: THREE.Vector3, p2: THREE.Vecto
 function buildSlingshots(
   table: Table,
   envMap: THREE.Texture | null,
+  kit: MaterialKit,
 ): { group: THREE.Group; visuals: SlingshotVisual[] } & Disposable {
   const group = new THREE.Group()
   const disposables: Disposable[] = []
   const visuals: SlingshotVisual[] = []
-  const bandMaterial = new THREE.MeshStandardMaterial({ color: 0xefe9e4, roughness: 0.8 })
+  // Rubber bands share the kit's white rubber material; only the edge line is owned here.
   const edgeMaterial = new THREE.LineBasicMaterial({ color: MAGENTA, toneMapped: false })
-  disposables.push(bandMaterial, edgeMaterial)
+  disposables.push(edgeMaterial)
 
   const rubberY = 0.55
   const rubberHeight = 0.4
@@ -517,7 +652,7 @@ function buildSlingshots(
       const length = Math.max(0.01, segmentLength(from, to))
       const mid = segmentMidLocal(table, from, to)
       const geometry = new THREE.BoxGeometry(length, rubberHeight, 0.18)
-      const mesh = new THREE.Mesh(geometry, bandMaterial)
+      const mesh = new THREE.Mesh(geometry, kit.rubberMaterial)
       mesh.position.set(mid.x, rubberY, mid.y)
       mesh.rotation.y = angleToRotationY(segmentAngle(from, to))
       mesh.castShadow = true
@@ -530,7 +665,7 @@ function buildSlingshots(
     const abLength = Math.max(0.01, segmentLength(sling.a, sling.b))
     const abMid = segmentMidLocal(table, sling.a, sling.b)
     const abGeometry = new THREE.BoxGeometry(abLength, rubberHeight, 0.18)
-    const abMesh = new THREE.Mesh(abGeometry, bandMaterial)
+    const abMesh = new THREE.Mesh(abGeometry, kit.rubberMaterial)
     abMesh.rotation.y = angleToRotationY(segmentAngle(sling.a, sling.b))
     abMesh.castShadow = true
     abMesh.receiveShadow = true
@@ -595,7 +730,10 @@ interface StandupVisual {
   flashT: number
 }
 
-function buildStandups(table: Table): { group: THREE.Group; visuals: StandupVisual[] } & Disposable {
+function buildStandups(
+  table: Table,
+  kit: MaterialKit,
+): { group: THREE.Group; visuals: StandupVisual[] } & Disposable {
   const group = new THREE.Group()
   const disposables: Disposable[] = []
   const visuals: StandupVisual[] = []
@@ -614,9 +752,17 @@ function buildStandups(table: Table): { group: THREE.Group; visuals: StandupVisu
     bracket.castShadow = true
     disposables.push(bracketGeometry)
 
+    // The target face is moulded ABS plastic: roughness 0.45 with the kit's pebbled bump map.
     const color = new THREE.Color(CYAN)
     const plateGeometry = new THREE.BoxGeometry(length, TARGET_HEIGHT, 0.1)
-    const plateMaterial = new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.2, roughness: 0.5 })
+    const plateMaterial = new THREE.MeshStandardMaterial({
+      color,
+      emissive: color,
+      emissiveIntensity: 0.2,
+      roughness: 0.45,
+      bumpMap: kit.pebbleBump,
+      bumpScale: PLASTIC_BUMP_SCALE,
+    })
     const plate = new THREE.Mesh(plateGeometry, plateMaterial)
     plate.position.set(mid.x, TARGET_HEIGHT / 2, mid.y)
     plate.rotation.set(0.12, angle, 0)
@@ -639,7 +785,7 @@ function updateStandups(visuals: StandupVisual[], events: readonly PhysicsEvent[
       if (v.id === event.id) v.flashT = STANDUP_FLASH_SECONDS
     }
   }
-  for (const v of visuals) v.material.emissiveIntensity = v.flashT > 0 ? 3 : 0.2
+  for (const v of visuals) v.material.emissiveIntensity = v.flashT > 0 ? GLOW_CAP_INTENSITY : 0.2
 }
 
 // -------------------------------------------------------------------------------------------
@@ -655,12 +801,23 @@ interface DropTargetVisual {
   down: boolean
 }
 
-function buildDropTargets(table: Table): { group: THREE.Group; visuals: DropTargetVisual[] } & Disposable {
+function buildDropTargets(
+  table: Table,
+  kit: MaterialKit,
+): { group: THREE.Group; visuals: DropTargetVisual[] } & Disposable {
   const group = new THREE.Group()
   const disposables: Disposable[] = []
   const visuals: DropTargetVisual[] = []
+  // The target face is moulded ABS plastic: roughness 0.45 with the kit's pebbled bump map.
   const color = new THREE.Color(MAGENTA)
-  const material = new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.35, roughness: 0.5 })
+  const material = new THREE.MeshStandardMaterial({
+    color,
+    emissive: color,
+    emissiveIntensity: 0.35,
+    roughness: 0.45,
+    bumpMap: kit.pebbleBump,
+    bumpScale: PLASTIC_BUMP_SCALE,
+  })
   disposables.push(material)
 
   for (const target of table.dropTargets) {
@@ -703,15 +860,14 @@ function updateDropTargets(visuals: DropTargetVisual[], state: TableState, dt: n
 // Rollovers
 // -------------------------------------------------------------------------------------------
 
-function buildRollovers(table: Table): { group: THREE.Group } & Disposable {
+/** The rollover wire is brushed stainless, sharing `kit.brushedMaterial`. */
+function buildRollovers(table: Table, kit: MaterialKit): { group: THREE.Group } & Disposable {
   const group = new THREE.Group()
   const disposables: Disposable[] = []
-  const material = new THREE.MeshStandardMaterial({ color: 0xc9ced6, roughness: 0.3, metalness: 0.85 })
-  disposables.push(material)
 
   for (const rollover of table.rollovers) {
     const geometry = new THREE.TorusGeometry(rollover.radius * 0.9, 0.035, 8, 16, Math.PI)
-    const mesh = new THREE.Mesh(geometry, material)
+    const mesh = new THREE.Mesh(geometry, kit.brushedMaterial)
     mesh.rotation.x = Math.PI / 2
     mesh.position.set(localX(table, rollover.pos.x), 0.02, localZ(table, rollover.pos.y))
     mesh.castShadow = true
@@ -730,11 +886,14 @@ interface SpinnerVisual {
   plate: THREE.Mesh
 }
 
-function buildSpinners(table: Table): { group: THREE.Group; visuals: SpinnerVisual[] } & Disposable {
+function buildSpinners(
+  table: Table,
+  kit: MaterialKit,
+): { group: THREE.Group; visuals: SpinnerVisual[] } & Disposable {
   const group = new THREE.Group()
   const disposables: Disposable[] = []
   const visuals: SpinnerVisual[] = []
-  const postMaterial = new THREE.MeshStandardMaterial({ color: 0x8a8f98, roughness: 0.4, metalness: 0.7 })
+  // The bracket is brushed stainless, sharing `kit.brushedMaterial`; the flag stays its own plastic.
   const plateMaterial = new THREE.MeshStandardMaterial({
     color: YELLOW,
     emissive: YELLOW,
@@ -742,7 +901,7 @@ function buildSpinners(table: Table): { group: THREE.Group; visuals: SpinnerVisu
     roughness: 0.4,
     side: THREE.DoubleSide,
   })
-  disposables.push(postMaterial, plateMaterial)
+  disposables.push(plateMaterial)
 
   for (const spinner of table.spinners) {
     const length = Math.max(0.01, segmentLength(spinner.a, spinner.b))
@@ -755,7 +914,7 @@ function buildSpinners(table: Table): { group: THREE.Group; visuals: SpinnerVisu
 
     const postGeometry = new THREE.CylinderGeometry(0.05, 0.05, 0.9, 8)
     for (const side of [-1, 1]) {
-      const post = new THREE.Mesh(postGeometry, postMaterial)
+      const post = new THREE.Mesh(postGeometry, kit.brushedMaterial)
       post.position.set((length / 2) * side, -0.45, 0)
       post.rotation.z = Math.PI / 2
       post.castShadow = true
@@ -831,7 +990,7 @@ function updateSaucers(visuals: SaucerVisual[], state: TableState): void {
         break
       }
     }
-    v.material.emissiveIntensity = held ? 1.6 : 0.2
+    v.material.emissiveIntensity = held ? GLOW_CAP_INTENSITY : 0.2
   }
 }
 
@@ -865,7 +1024,12 @@ function buildRibbon(edges: { left: THREE.Vector3; right: THREE.Vector3 }[]): TH
   return geometry
 }
 
-function buildRamp(table: Table, ramp: Ramp, envMap: THREE.Texture | null): { group: THREE.Group } & Disposable {
+function buildRamp(
+  table: Table,
+  ramp: Ramp,
+  envMap: THREE.Texture | null,
+  kit: MaterialKit,
+): { group: THREE.Group } & Disposable {
   const group = new THREE.Group()
   const disposables: Disposable[] = []
 
@@ -896,13 +1060,14 @@ function buildRamp(table: Table, ramp: Ramp, envMap: THREE.Texture | null): { gr
     floorEdges.map((e) => ({ left: e.right.clone(), right: new THREE.Vector3(e.right.x, e.right.y + RAMP_WALL_HEIGHT, e.right.z) })),
   )
 
+  // Less glare: a dimmer, more transparent plastic so the playfield art reads through it.
   const plasticMaterial = new THREE.MeshPhysicalMaterial({
     color: MAGENTA,
     transparent: true,
-    opacity: 0.35,
+    opacity: 0.3,
     roughness: 0.15,
     emissive: MAGENTA,
-    emissiveIntensity: 0.6,
+    emissiveIntensity: 0.25,
     side: THREE.DoubleSide,
     envMap: envMap ?? null,
     envMapIntensity: envMap ? 0.6 : 0,
@@ -918,17 +1083,10 @@ function buildRamp(table: Table, ramp: Ramp, envMap: THREE.Texture | null): { gr
   disposables.push(floorGeometry, leftWallGeometry, rightWallGeometry, plasticMaterial, edgeMaterial, floorEdgeLines.geometry)
   group.add(floorMesh, leftWallMesh, rightWallMesh, floorEdgeLines)
 
-  const chromeMaterial = new THREE.MeshStandardMaterial({
-    color: 0xdadde3,
-    roughness: 0.15,
-    metalness: 1,
-    envMap: envMap ?? null,
-    envMapIntensity: envMap ? 1 : 0,
-  })
-  disposables.push(chromeMaterial)
+  // Stand-offs are brushed stainless, sharing `kit.brushedMaterial`.
   for (const standoff of standoffs) {
     const geometry = new THREE.CylinderGeometry(0.07, 0.07, standoff.height, 8)
-    const mesh = new THREE.Mesh(geometry, chromeMaterial)
+    const mesh = new THREE.Mesh(geometry, kit.brushedMaterial)
     mesh.position.set(standoff.x, standoff.height / 2, standoff.z)
     mesh.castShadow = true
     disposables.push(geometry)
@@ -949,9 +1107,13 @@ function buildRamp(table: Table, ramp: Ramp, envMap: THREE.Texture | null): { gr
   return { group, dispose: () => disposeAll(disposables) }
 }
 
-function buildRamps(table: Table, envMap: THREE.Texture | null): { group: THREE.Group } & Disposable {
+function buildRamps(
+  table: Table,
+  envMap: THREE.Texture | null,
+  kit: MaterialKit,
+): { group: THREE.Group } & Disposable {
   const group = new THREE.Group()
-  const parts = table.ramps.map((ramp) => buildRamp(table, ramp, envMap))
+  const parts = table.ramps.map((ramp) => buildRamp(table, ramp, envMap, kit))
   for (const part of parts) group.add(part.group)
   return { group, dispose: () => disposeAll(parts) }
 }
@@ -960,24 +1122,16 @@ function buildRamps(table: Table, envMap: THREE.Texture | null): { group: THREE.
 // Gates
 // -------------------------------------------------------------------------------------------
 
-function buildGates(table: Table): { group: THREE.Group } & Disposable {
+/** The gate wire is brushed stainless, sharing `kit.brushedMaterial`; this builder disposes only geometry. */
+function buildGates(table: Table, kit: MaterialKit): { group: THREE.Group } & Disposable {
   const group = new THREE.Group()
   const disposables: Disposable[] = []
-  const material = new THREE.MeshPhysicalMaterial({
-    color: 0xcfd4db,
-    transparent: true,
-    opacity: 0.35,
-    roughness: 0.3,
-    metalness: 0.6,
-    side: THREE.DoubleSide,
-  })
-  disposables.push(material)
 
   for (const gate of table.gates) {
     const length = Math.max(0.01, segmentLength(gate.a, gate.b))
     const mid = segmentMidLocal(table, gate.a, gate.b)
     const geometry = new THREE.BoxGeometry(length, GATE_HEIGHT, 0.04)
-    const mesh = new THREE.Mesh(geometry, material)
+    const mesh = new THREE.Mesh(geometry, kit.brushedMaterial)
     mesh.position.set(mid.x, GATE_HEIGHT / 2, mid.y)
     mesh.rotation.y = angleToRotationY(segmentAngle(gate.a, gate.b))
     mesh.rotation.x = 0.08
@@ -1019,20 +1173,34 @@ interface FlipperVisual {
   tipMarker: THREE.Mesh
 }
 
-function buildFlippers(table: Table, envMap: THREE.Texture | null): { group: THREE.Group; visuals: FlipperVisual[] } & Disposable {
+function buildFlippers(
+  table: Table,
+  envMap: THREE.Texture | null,
+  kit: MaterialKit,
+): { group: THREE.Group; visuals: FlipperVisual[] } & Disposable {
   const group = new THREE.Group()
   const disposables: Disposable[] = []
   const visuals: FlipperVisual[] = []
 
+  // The body is moulded ABS plastic (roughness 0.45, pebbled bump, no clearcoat); the tip is the
+  // rubber "flipper band" (roughness 0.85, pebbled bump), keeping its neon magenta glow.
   const bodyMaterial = new THREE.MeshPhysicalMaterial({
-    color: 0xf1eee8,
-    roughness: 0.35,
-    clearcoat: 0.4,
+    color: NEAR_WHITE,
+    roughness: 0.45,
+    bumpMap: kit.pebbleBump,
+    bumpScale: PLASTIC_BUMP_SCALE,
     envMap: envMap ?? null,
     envMapIntensity: envMap ? 0.3 : 0,
   })
   const edgeMaterial = new THREE.LineBasicMaterial({ color: MAGENTA, toneMapped: false })
-  const tipMaterial = new THREE.MeshStandardMaterial({ color: MAGENTA, emissive: MAGENTA, emissiveIntensity: 1.4 })
+  const tipMaterial = new THREE.MeshStandardMaterial({
+    color: MAGENTA,
+    emissive: MAGENTA,
+    emissiveIntensity: 1.4,
+    roughness: 0.85,
+    bumpMap: kit.pebbleBump,
+    bumpScale: RUBBER_BUMP_SCALE,
+  })
   disposables.push(bodyMaterial, edgeMaterial, tipMaterial)
 
   for (const flipper of table.flippers) {
@@ -1100,19 +1268,19 @@ function updateFlippers(visuals: FlipperVisual[], table: Table, state: TableStat
 // Plunger
 // -------------------------------------------------------------------------------------------
 
-function buildPlunger(table: Table): { group: THREE.Group; baseZ: number } & Disposable {
+/** The rod is brushed stainless, sharing `kit.brushedMaterial`; the knob keeps its own dark plastic. */
+function buildPlunger(table: Table, kit: MaterialKit): { group: THREE.Group; baseZ: number } & Disposable {
   const disposables: Disposable[] = []
   const group = new THREE.Group()
   const baseX = localX(table, table.plunger.rest.x)
   const baseZ = localZ(table, table.plunger.rest.y)
   group.position.set(baseX, 0, baseZ)
 
-  const chromeMaterial = new THREE.MeshStandardMaterial({ color: 0xdadde3, roughness: 0.15, metalness: 1 })
   const knobMaterial = new THREE.MeshStandardMaterial({ color: 0x201626, roughness: 0.5 })
-  disposables.push(chromeMaterial, knobMaterial)
+  disposables.push(knobMaterial)
 
   const rodGeometry = new THREE.CylinderGeometry(0.09, 0.09, 1.4, 12)
-  const rod = new THREE.Mesh(rodGeometry, chromeMaterial)
+  const rod = new THREE.Mesh(rodGeometry, kit.brushedMaterial)
   rod.rotation.x = Math.PI / 2
   rod.position.set(0, 0.3, 0.7)
   rod.castShadow = true
@@ -1201,10 +1369,10 @@ function updateInserts(
     const v = visuals[i]
     let intensity = INSERT_OFF_INTENSITY
     if (lightShowRemaining > 0) {
-      intensity = isBlinkOn(time, LIGHT_SHOW_BLINK_HZ) ? INSERT_ON_INTENSITY : INSERT_ON_INTENSITY * 0.35
+      intensity = isBlinkOn(time, LIGHT_SHOW_BLINK_HZ) ? GLOW_CAP_INTENSITY : GLOW_CAP_INTENSITY * 0.35
     } else if (attract) {
       const phase = ((time * ATTRACT_CHASE_SPEED + i / visuals.length) % 1 + 1) % 1
-      intensity = phase < ATTRACT_CHASE_WIDTH ? INSERT_ON_INTENSITY : INSERT_OFF_INTENSITY
+      intensity = phase < ATTRACT_CHASE_WIDTH ? GLOW_CAP_INTENSITY : INSERT_OFF_INTENSITY
     } else {
       const lamp: LampState = game.lamps[v.id] ?? 'off'
       if (lamp === 'on') intensity = INSERT_ON_INTENSITY
@@ -1226,15 +1394,21 @@ interface BallSlot {
   seen: boolean
 }
 
+/**
+ * A real steel pinball: polished but broken up by hairline scratches (`roughnessMap`) so it reads
+ * as metal reflecting the room, not a glowing white orb. No emissive, no light attached.
+ */
 function buildBallPool(envMap: THREE.Texture | null, ballRadius: number): { group: THREE.Group; pool: BallSlot[] } & Disposable {
   const group = new THREE.Group()
-  const geometry = new THREE.SphereGeometry(ballRadius, 32, 24)
+  const geometry = new THREE.SphereGeometry(ballRadius, 48, 32)
+  const roughnessMap = makeScratchRoughness()
   const material = new THREE.MeshStandardMaterial({
-    color: 0xe8ecef,
+    color: 0xc9ccd2,
     metalness: 1,
-    roughness: 0.06,
+    roughness: 0.16,
+    roughnessMap,
     envMap: envMap ?? null,
-    envMapIntensity: envMap ? 1.4 : 0,
+    envMapIntensity: envMap ? 1 : 0,
   })
   const pool: BallSlot[] = []
   for (let i = 0; i < MAX_BALLS; i++) {
@@ -1250,6 +1424,7 @@ function buildBallPool(envMap: THREE.Texture | null, ballRadius: number): { grou
     dispose() {
       geometry.dispose()
       material.dispose()
+      roughnessMap.dispose()
     },
   }
 }
@@ -1321,6 +1496,84 @@ function updateBalls(
 }
 
 // -------------------------------------------------------------------------------------------
+// Screws (cheap realism detail)
+// -------------------------------------------------------------------------------------------
+
+const SCREW_RADIUS = 0.09
+const SCREW_HEIGHT = 0.05
+/** Budget from SPEC.md: at most this many screw-head instances. */
+const MAX_SCREWS = 48
+
+/** A flat disc with a rectangular through-slot: cheap stand-in for a slotted screw head. */
+function buildScrewGeometry(radius: number, height: number): THREE.BufferGeometry {
+  const shape = new THREE.Shape()
+  shape.absarc(0, 0, radius, 0, Math.PI * 2, false)
+  const slotWidth = radius * 0.22
+  const slotLength = radius * 1.6
+  const slot = new THREE.Path()
+  slot.moveTo(-slotLength / 2, -slotWidth / 2)
+  slot.lineTo(slotLength / 2, -slotWidth / 2)
+  slot.lineTo(slotLength / 2, slotWidth / 2)
+  slot.lineTo(-slotLength / 2, slotWidth / 2)
+  slot.closePath()
+  shape.holes.push(slot)
+  const geometry = new THREE.ExtrudeGeometry(shape, { depth: height, bevelEnabled: false, curveSegments: 12 })
+  // Extrusion depth (shape local z) becomes this frame's up axis; see `buildPlayfield` for the
+  // Rx(-90deg) derivation.
+  geometry.rotateX(-Math.PI / 2)
+  return geometry
+}
+
+/**
+ * Tiny chrome screw heads at the slingshot plastic corners, the apron corners, each standup
+ * bracket and each lane guide end: one shared geometry, drawn as a single `InstancedMesh`,
+ * capped at `MAX_SCREWS` instances.
+ */
+function buildScrews(table: Table, kit: MaterialKit): { mesh: THREE.InstancedMesh | null } & Disposable {
+  const positions: THREE.Vector3[] = []
+
+  for (const sling of table.slingshots) {
+    for (const p of [sling.a, sling.b, sling.c]) {
+      positions.push(new THREE.Vector3(localX(table, p.x), SLINGSHOT_PLASTIC_HEIGHT, localZ(table, p.y)))
+    }
+  }
+
+  const apronRect = computeApronRect(table)
+  const apronScrewY = 1.16
+  const apronMargin = 0.15
+  for (const x of [apronMargin, apronRect.rightX - apronMargin]) {
+    for (const y of [apronRect.topY + apronMargin, table.height - apronMargin]) {
+      positions.push(new THREE.Vector3(localX(table, x), apronScrewY, localZ(table, y)))
+    }
+  }
+
+  for (const standup of table.standups) {
+    const mid = segmentMidLocal(table, standup.a, standup.b)
+    positions.push(new THREE.Vector3(mid.x, TARGET_HEIGHT * 0.5, mid.y))
+  }
+
+  for (const wall of table.walls) {
+    if (wall.kind !== 'guide') continue
+    positions.push(new THREE.Vector3(localX(table, wall.a.x), WALL_HEIGHT, localZ(table, wall.a.y)))
+    positions.push(new THREE.Vector3(localX(table, wall.b.x), WALL_HEIGHT, localZ(table, wall.b.y)))
+  }
+
+  const capped = positions.slice(0, MAX_SCREWS)
+  if (capped.length === 0) return { mesh: null, dispose() {} }
+
+  const geometry = buildScrewGeometry(SCREW_RADIUS, SCREW_HEIGHT)
+  const mesh = new THREE.InstancedMesh(geometry, kit.brushedMaterial, capped.length)
+  const matrix = new THREE.Matrix4()
+  capped.forEach((pos, i) => {
+    matrix.makeTranslation(pos.x, pos.y, pos.z)
+    mesh.setMatrixAt(i, matrix)
+  })
+  mesh.instanceMatrix.needsUpdate = true
+
+  return { mesh, dispose: () => geometry.dispose() }
+}
+
+// -------------------------------------------------------------------------------------------
 // Public API
 // -------------------------------------------------------------------------------------------
 
@@ -1342,23 +1595,25 @@ export function createTableView(table: Table, envMap: THREE.Texture | null): Tab
   const group = new THREE.Group()
   const disposables: Disposable[] = []
 
+  const kit = createMaterialKit(envMap)
   const playfield = buildPlayfield(table)
   const apron = buildApron(table)
-  const walls = buildWalls(table, envMap)
-  const posts = buildPosts(table, envMap)
-  const bumpers = buildBumpers(table, envMap)
-  const slingshots = buildSlingshots(table, envMap)
-  const standups = buildStandups(table)
-  const dropTargets = buildDropTargets(table)
-  const rollovers = buildRollovers(table)
-  const spinners = buildSpinners(table)
+  const walls = buildWalls(table, kit)
+  const posts = buildPosts(table, envMap, kit)
+  const bumpers = buildBumpers(table, envMap, kit)
+  const slingshots = buildSlingshots(table, envMap, kit)
+  const standups = buildStandups(table, kit)
+  const dropTargets = buildDropTargets(table, kit)
+  const rollovers = buildRollovers(table, kit)
+  const spinners = buildSpinners(table, kit)
   const saucers = buildSaucers(table)
-  const ramps = buildRamps(table, envMap)
-  const gates = buildGates(table)
-  const flippers = buildFlippers(table, envMap)
-  const plunger = buildPlunger(table)
+  const ramps = buildRamps(table, envMap, kit)
+  const gates = buildGates(table, kit)
+  const flippers = buildFlippers(table, envMap, kit)
+  const plunger = buildPlunger(table, kit)
   const inserts = buildInserts(table)
   const balls = buildBallPool(envMap, table.ballRadius)
+  const screws = buildScrews(table, kit)
 
   group.add(
     playfield.mesh,
@@ -1379,7 +1634,9 @@ export function createTableView(table: Table, envMap: THREE.Texture | null): Tab
     inserts.group,
     balls.group,
   )
+  if (screws.mesh) group.add(screws.mesh)
   disposables.push(
+    kit,
     playfield,
     apron,
     walls,
@@ -1397,6 +1654,7 @@ export function createTableView(table: Table, envMap: THREE.Texture | null): Tab
     plunger,
     inserts,
     balls,
+    screws,
   )
 
   // Reused every frame so rolling the balls never allocates a Vector3/Quaternion.

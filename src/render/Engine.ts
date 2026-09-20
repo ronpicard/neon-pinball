@@ -7,7 +7,6 @@
  */
 
 import * as THREE from 'three'
-import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js'
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js'
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js'
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js'
@@ -24,6 +23,8 @@ import type {
 } from './engineApi.ts'
 import { createInput } from './input.ts'
 import type { InputController } from './input.ts'
+import { createArcadeRoom } from './arcadeRoom.ts'
+import type { ArcadeRoom } from './arcadeRoom.ts'
 import { createCabinet } from './cabinet.ts'
 import type { Cabinet } from './cabinet.ts'
 import { createTableView } from './tableView.ts'
@@ -67,11 +68,11 @@ const ALL_FALSE_INPUT: Input = { left: false, right: false, plunger: false, nudg
 // -------------------------------------------------------------------------------------------
 
 const BACKGROUND_COLOR = 0x05030b
-const FOG_DENSITY = 0.006
-const TONE_MAPPING_EXPOSURE = 1.25
-const ENVIRONMENT_INTENSITY = 0.35
-const BLOOM_STRENGTH = 0.45
-const BLOOM_RADIUS = 0.6
+const FOG_DENSITY = 0.0028
+const TONE_MAPPING_EXPOSURE = 1.3
+const ENVIRONMENT_INTENSITY = 0.55
+const BLOOM_STRENGTH = 0.28
+const BLOOM_RADIUS = 0.45
 const BLOOM_THRESHOLD = 1.0
 const SHADOW_MAP_SIZE = 2048
 
@@ -85,7 +86,7 @@ const FILL_LIGHT_COLOR = 0x9fd4ff
 const FILL_LIGHT_INTENSITY = 0.6
 const HEMI_SKY_COLOR = 0x33264d
 const HEMI_GROUND_COLOR = 0x0a0410
-const HEMI_INTENSITY = 0.9
+const HEMI_INTENSITY = 1.5
 const NEON_LEFT_COLOR = 0xff2bd6
 const NEON_RIGHT_COLOR = 0x22e4ff
 const NEON_POINT_INTENSITY = 0.8
@@ -105,6 +106,10 @@ const CAMERA_NEAR = 0.4
 const CAMERA_FAR = 400
 /** Fixed field of view. Fitting is done by pulling the eye back, not by changing this. */
 const CAMERA_FOV_DEGREES = 36
+/** The low chase view is close to the table, so it takes a wider lens to hold the flippers and the scoreboard. */
+const CHASE_FOV_DEGREES = 46
+/** How quickly the lens eases between two views' fields of view, per second. */
+const FOV_EASE_RATE = 6
 /** Canvas aspect (width / height) below which the default view is 'top' instead of 'player'. */
 const PORTRAIT_ASPECT_THRESHOLD = 0.8
 /** Time constant of the critically-damped ease between camera views. */
@@ -125,15 +130,39 @@ const PLAYER_ELEVATION = (52 * Math.PI) / 180
 /** The player's eye starts this far from its look target, before the fit pulls it back. */
 const PLAYER_BASE_DISTANCE = 30
 const TOP_VIEW_BASE_HEIGHT = 34
-const CHASE_EYE_HEIGHT = 22
+const CHASE_EYE_HEIGHT = 26
 /** How much of the ball's sideways position the chase camera follows. */
 const CHASE_FOLLOW_SHARE = 0.35
 /** How far behind the flipper line the chase eye sits, and how far up-table it looks. */
-const CHASE_EYE_BACK_OFFSET = 16
-const CHASE_LOOK_AHEAD = 16
+const CHASE_EYE_BACK_OFFSET = 22
+const CHASE_LOOK_AHEAD = 24
 const CHASE_LOOK_HEIGHT = 0
 /** How quickly the chase camera's x eases toward the tracked ball's x. */
 const CHASE_TRACK_RATE = 3.5
+
+/** Where the room's reflections are captured from: just above the middle of the playfield. */
+const ENVIRONMENT_CAPTURE_HEIGHT = 44
+/** A soft overhead panel, present only while the reflections are captured, so steel has a highlight to catch. */
+const ENVIRONMENT_SOFTBOX_INTENSITY = 2.2
+const ENVIRONMENT_FILL_INTENSITY = 0.5
+
+/**
+ * Rendering cost steps, best first. The engine starts at the first step a device can likely hold and
+ * only ever steps down, when frames stay slow, so a phone never flip-flops between two looks.
+ */
+const QUALITY_STEPS: { pixelRatio: number; bloom: boolean; shadowMapSize: number }[] = [
+  { pixelRatio: 2, bloom: true, shadowMapSize: 2048 },
+  { pixelRatio: 1.5, bloom: true, shadowMapSize: 1024 },
+  { pixelRatio: 1, bloom: true, shadowMapSize: 1024 },
+  { pixelRatio: 1, bloom: false, shadowMapSize: 1024 },
+]
+/** Touch devices start one step down: their screens are dense and their GPUs are not. */
+const TOUCH_START_QUALITY = 1
+/** A smoothed frame time above this, in seconds, for `SLOW_FRAMES_TO_STEP_DOWN` frames steps quality down. */
+const SLOW_FRAME_SECONDS = 1 / 38
+const SLOW_FRAMES_TO_STEP_DOWN = 90
+/** Frames ignored after start-up or a quality change, while shaders compile and buffers resize. */
+const QUALITY_SETTLE_FRAMES = 60
 
 const NUDGE_SHAKE_SECONDS = 0.22
 const NUDGE_SHAKE_MAGNITUDE = 0.35
@@ -199,7 +228,16 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
   // --- Renderer / scene / environment ------------------------------------------------------------
 
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' })
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
+  // `?quality=high` or `?quality=low` pins the rendering cost; anything else lets the engine adapt.
+  const requestedQuality = new URLSearchParams(window.location.search).get('quality')
+  const qualityPinned = requestedQuality === 'high' || requestedQuality === 'low'
+  const touchDevice = window.matchMedia('(pointer: coarse)').matches
+  let qualityStep =
+    requestedQuality === 'high' ? 0
+    : requestedQuality === 'low' ? QUALITY_STEPS.length - 1
+    : touchDevice ? TOUCH_START_QUALITY
+    : 0
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, QUALITY_STEPS[qualityStep].pixelRatio))
   renderer.toneMapping = THREE.ACESFilmicToneMapping
   renderer.toneMappingExposure = TONE_MAPPING_EXPOSURE
   renderer.outputColorSpace = THREE.SRGBColorSpace
@@ -210,18 +248,36 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
   scene.background = new THREE.Color(BACKGROUND_COLOR)
   scene.fog = new THREE.FogExp2(BACKGROUND_COLOR, FOG_DENSITY)
 
+  // Reflections come from the arcade itself, captured once from above the playfield: steel and
+  // lacquer mirror the room's screens and neon instead of a photo studio's white softboxes.
+  const room: ArcadeRoom = createArcadeRoom()
   const pmremGenerator = new THREE.PMREMGenerator(renderer)
-  const roomEnvironment = new RoomEnvironment()
-  const environmentTarget = pmremGenerator.fromScene(roomEnvironment)
+  const environmentScene = new THREE.Scene()
+  environmentScene.background = new THREE.Color(BACKGROUND_COLOR)
+  const softboxGeometry = new THREE.PlaneGeometry(70, 46)
+  const softboxMaterial = new THREE.MeshBasicMaterial({ color: 0xffe9cf, side: THREE.DoubleSide })
+  softboxMaterial.color.multiplyScalar(ENVIRONMENT_SOFTBOX_INTENSITY)
+  const softbox = new THREE.Mesh(softboxGeometry, softboxMaterial)
+  softbox.rotation.x = Math.PI / 2
+  softbox.position.set(0, 104, 10)
+  const environmentFill = new THREE.HemisphereLight(0x8a7cc0, 0x1a1024, ENVIRONMENT_FILL_INTENSITY)
+  environmentScene.add(room.group, softbox, environmentFill)
+  const environmentTarget = pmremGenerator.fromScene(environmentScene, 0.015, 1, 700, {
+    position: new THREE.Vector3(0, ENVIRONMENT_CAPTURE_HEIGHT, 0),
+  })
   const envMap = environmentTarget.texture
   scene.environment = envMap
   scene.environmentIntensity = ENVIRONMENT_INTENSITY
-  roomEnvironment.dispose()
+  environmentScene.remove(room.group, softbox, environmentFill)
+  softboxGeometry.dispose()
+  softboxMaterial.dispose()
+  environmentFill.dispose()
   pmremGenerator.dispose()
+  scene.add(room.group)
 
   // --- Post-processing ---------------------------------------------------------------------------
 
-  const camera = new THREE.PerspectiveCamera(CAMERA_FOV_DEGREES, 1, CAMERA_NEAR, CAMERA_FAR)
+  const camera = new THREE.PerspectiveCamera(CHASE_FOV_DEGREES, 1, CAMERA_NEAR, CAMERA_FAR)
 
   const composer = new EffectComposer(renderer)
   const renderPass = new RenderPass(scene, camera)
@@ -232,6 +288,7 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
     BLOOM_THRESHOLD,
   )
   const outputPass = new OutputPass()
+  bloomPass.enabled = QUALITY_STEPS[qualityStep].bloom
   composer.addPass(renderPass)
   composer.addPass(bloomPass)
   composer.addPass(outputPass)
@@ -263,6 +320,11 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
     new THREE.Vector3(x, 0, z).applyMatrix4(view.group.matrixWorld),
   )
   const [backLeft, backRight, frontLeft, frontRight] = corners
+  /** The playfield's two edges level with the flipper pivots: what the low chase view must keep on screen. */
+  const flipperLineZ = TABLE.flippers[0].pivot.y - halfHeight
+  const flipperLineCorners = [-halfWidth, halfWidth].map((x) =>
+    new THREE.Vector3(x, 0, flipperLineZ).applyMatrix4(view.group.matrixWorld),
+  )
   /** What the camera fit keeps on screen: the playfield plus the rails and lockdown bar around it. */
   const frameCorners = localCorners.map(([x, z]) =>
     new THREE.Vector3(
@@ -304,7 +366,7 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
   keyLight.decay = 0
   keyLight.distance = OVERHEAD_LIGHT_HEIGHT * 3
   keyLight.castShadow = true
-  keyLight.shadow.mapSize.set(SHADOW_MAP_SIZE, SHADOW_MAP_SIZE)
+  keyLight.shadow.mapSize.setScalar(Math.min(SHADOW_MAP_SIZE, QUALITY_STEPS[qualityStep].shadowMapSize))
   keyLight.shadow.camera.near = Math.max(1, keyLightDistance - tableRadius * 1.3)
   keyLight.shadow.camera.far = keyLightDistance + tableRadius * 1.3
   keyLight.shadow.bias = -0.0006
@@ -330,9 +392,7 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
 
   // --- Input / game state ------------------------------------------------------------------------
 
-  const initialAspect = canvas.clientWidth / Math.max(1, canvas.clientHeight)
-  let currentView: CameraView = initialAspect < PORTRAIT_ASPECT_THRESHOLD ? 'top' : 'player'
-  let userPickedView = false
+  let currentView: CameraView = 'chase'
 
   const input: InputController = createInput({
     // React owns the camera choice and pausing (its HUD shows both, and it calls `setCameraView` and
@@ -391,6 +451,15 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
    * Fills `rigEyeScratch`/`rigLookScratch`/`rigUpScratch` with the un-pulled-back rig for `viewName`.
    * `chaseX` is the world-space x the chase view's eye and gaze are currently centred on.
    */
+  function isPortrait(): boolean {
+    return aspect < PORTRAIT_ASPECT_THRESHOLD
+  }
+
+  /** The lens each view uses, in degrees of vertical field of view. */
+  function viewFov(viewName: CameraView): number {
+    return viewName === 'chase' && !isPortrait() ? CHASE_FOV_DEGREES : CAMERA_FOV_DEGREES
+  }
+
   function buildRig(viewName: CameraView, chaseX: number): void {
     if (viewName === 'top') {
       rigEyeScratch.copy(playfieldCentre).addScaledVector(playfieldNormal, TOP_VIEW_BASE_HEIGHT)
@@ -398,7 +467,9 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
       rigUpScratch.copy(upTheTable)
       return
     }
-    if (viewName === 'player') {
+    if (viewName === 'player' || (viewName === 'chase' && isPortrait())) {
+      // Upright phones have height to spare and no width: the low chase view would crop the table's
+      // sides, so there it becomes the steep standing view, which fills a tall screen.
       // A fixed line of sight down the table, so pulling back along it always shrinks the machine
       // on screen and the fit search below is monotonic.
       rigLookScratch.copy(playfieldCentre)
@@ -465,14 +536,16 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
     const limitX = freeX * (1 - CAMERA_FIT_MARGIN)
     const limitY = freeY * (1 - CAMERA_FIT_MARGIN)
 
-    // The chase view sits inside the machine on purpose: there is nothing to fit.
-    if (viewName === 'chase') return 0
+    // The low chase view sits inside the machine on purpose, so it only has to keep the playfield's
+    // width at the flippers on screen (a squarish window pulls it back; a wide one leaves it alone).
+    const lowChase = viewName === 'chase' && !isPortrait()
+    const fitPoints = lowChase ? flipperLineCorners : frameCorners
+    const fitLimitY = lowChase ? Number.POSITIVE_INFINITY : limitY
 
-    probeCamera.fov = CAMERA_FOV_DEGREES
+    probeCamera.fov = viewFov(viewName)
     probeCamera.aspect = aspect
     probeCamera.near = CAMERA_NEAR
     probeCamera.far = CAMERA_FAR
-
 
     function fits(extra: number): boolean {
       buildRig(viewName, playfieldCentre.x)
@@ -480,7 +553,7 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
       probeCamera.position.copy(rigEyeScratch)
       probeCamera.up.copy(rigUpScratch)
       probeCamera.lookAt(rigLookScratch)
-      return cornersFit(frameCorners, limitX, limitY)
+      return cornersFit(fitPoints, limitX, fitLimitY)
     }
 
     let lo = FIT_MIN_EXTRA
@@ -516,16 +589,9 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
     )
   }
 
-  /** Sets `currentView` and remembers that it was chosen, so aspect changes no longer override it. */
+  /** Sets `currentView`. */
   function applyCameraView(next: CameraView): void {
     currentView = next
-    userPickedView = true
-  }
-
-  /** Switches `currentView` to the aspect-based default, until the user (or the API) picks one. */
-  function applyDefaultViewForAspect(): void {
-    if (userPickedView) return
-    currentView = aspect < PORTRAIT_ASPECT_THRESHOLD ? 'top' : 'player'
   }
 
   // --- Command execution -------------------------------------------------------------------------
@@ -676,8 +742,6 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
   // --- Per-frame visuals -------------------------------------------------------------------------
 
   function updateCamera(dt: number): void {
-    applyDefaultViewForAspect()
-
     let trackX = playfieldCentre.x
     const plungerBall = ballAtPlunger(TABLE, state)
     if (currentView === 'chase') {
@@ -717,6 +781,12 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
     } else {
       dampVector3(cameraPosition, rigEyeScratch, cameraPositionVelocity, VIEW_SMOOTH_TIME, dt)
       dampVector3(cameraLookAt, rigLookScratch, cameraLookAtVelocity, VIEW_SMOOTH_TIME, dt)
+    }
+
+    const targetFov = viewFov(currentView)
+    if (Math.abs(camera.fov - targetFov) > 0.01) {
+      camera.fov += (targetFov - camera.fov) * (1 - Math.exp(-FOV_EASE_RATE * dt))
+      camera.updateProjectionMatrix()
     }
 
     camera.position.copy(cameraPosition)
@@ -807,6 +877,38 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
   let hasLastFrameTime = false
   let accumulator = 0
 
+  // --- Adaptive quality: step down, never up, when frames stay slow -------------------------------
+
+  let smoothedFrameSeconds = 0
+  let slowFrames = 0
+  let settleFrames = QUALITY_SETTLE_FRAMES
+
+  function applyQualityStep(): void {
+    const step = QUALITY_STEPS[qualityStep]
+    const pixelRatio = Math.min(window.devicePixelRatio, step.pixelRatio)
+    renderer.setPixelRatio(pixelRatio)
+    composer.setPixelRatio(pixelRatio)
+    bloomPass.enabled = step.bloom
+    handleResize()
+  }
+
+  /** `frameSeconds` is the real time since the last frame, before clamping. */
+  function watchFrameRate(frameSeconds: number): void {
+    if (qualityPinned || qualityStep >= QUALITY_STEPS.length - 1) return
+    if (settleFrames > 0) {
+      settleFrames--
+      smoothedFrameSeconds = frameSeconds
+      return
+    }
+    smoothedFrameSeconds += (frameSeconds - smoothedFrameSeconds) * 0.1
+    slowFrames = smoothedFrameSeconds > SLOW_FRAME_SECONDS ? slowFrames + 1 : 0
+    if (slowFrames < SLOW_FRAMES_TO_STEP_DOWN) return
+    qualityStep++
+    slowFrames = 0
+    settleFrames = QUALITY_SETTLE_FRAMES
+    applyQualityStep()
+  }
+
   function animate(now: number): void {
     rafId = requestAnimationFrame(animate)
     if (!hasLastFrameTime) {
@@ -814,7 +916,8 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
       lastFrameTime = now
       return
     }
-    const dt = Math.min(MAX_FRAME_SECONDS, (now - lastFrameTime) / 1000)
+    const frameSeconds = (now - lastFrameTime) / 1000
+    const dt = Math.min(MAX_FRAME_SECONDS, frameSeconds)
     lastFrameTime = now
 
     frameEvents.length = 0
@@ -832,7 +935,10 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
       accumulator = 0
     }
 
+    if (!hidden) watchFrameRate(frameSeconds)
+
     view.update(state, game, frameEvents, paused ? 0 : dt)
+    room.update(now / 1000)
     updateCamera(dt)
     updateDisplay()
     updateHud()
@@ -891,6 +997,7 @@ export function createEngine(canvas: HTMLCanvasElement, events: EngineEvents): E
       input.dispose()
       view.dispose()
       cabinet.dispose()
+      room.dispose()
       renderPass.dispose()
       bloomPass.dispose()
       outputPass.dispose()

@@ -1,14 +1,14 @@
 # Neon Pinball
 
-Neon Pinball is a 3D pinball machine that runs in the browser: a full cabinet with a lacquered playfield, a chrome ball, and lamps under the glass, dressed in retro arcade neon. Pop bumpers, slingshots, drop targets, a spinner, a ramp, a saucer, multiball, and a tilt sensor are all simulated. Play the [live demo](https://ronpicard.github.io/neon-pinball/) — it works on both phones and desktops.
+Neon Pinball is a 3D pinball machine that runs in the browser: a full cabinet with a lacquered playfield, a steel ball, lamps under the glass, and a dot-matrix scoreboard, standing in a dim arcade among rows of glowing cabinets. Pop bumpers, slingshots, drop targets, a spinner, a ramp, a saucer, multiball, and a tilt sensor are all simulated. Play the [live demo](https://ronpicard.github.io/neon-pinball/) — it works on both phones and desktops.
 
 ## How to play
 
 - Left flipper: `Left Arrow`, `Left Shift`, `Z`, or `A`. Right flipper: `Right Arrow`, `Right Shift`, `/`, `M`, or `D`.
 - Plunger: hold `Space`, `Enter`, or `Down Arrow` to pull it back and let go to launch. The longer the pull, the harder the launch: a full pull sends the ball around the top arch and down the left orbit, and a soft one drops it into the top lanes.
 - Nudge: `Q` shoves the table left, `E` shoves it right, and `W` or `Up Arrow` shoves it up. Nudging can save a ball, but too much of it costs a warning, and the third warning tilts the machine: the flippers go dead and the ball's bonus is lost.
-- Touch: the lower left and lower right of the screen are the flippers (both can be held at once), with a plunger button and a nudge button above them.
-- `C` or the camera button cycles the view: standing at the machine, straight down on the playfield, and low behind the flippers following the ball.
+- Touch: tap and hold the left or right side of the screen to flip (both can be held at once). While a ball waits on the plunger, hold the `HOLD TO LAUNCH` button, or just the right side of the screen, and let go to launch. The `NUDGE` button shoves the table up.
+- The game opens on a low view from just behind the flippers that follows the ball and keeps the scoreboard in sight. `C` or the camera button cycles it with two others: standing at the machine, and straight down on the playfield. On a phone held upright, where the low view would crop the table's sides, it becomes the steep standing view.
 - `P` or `Escape` pauses. Switching to another tab pauses too.
 - Three balls a game. A ball that drains in its first twelve seconds of play is served again for free.
 - The five best scores are saved in your browser, arcade style, with three initials.
@@ -47,11 +47,15 @@ npm run simulate -- 5
 
 This prints each game's score, its length, and how many times each part of the table fired.
 
+## Phones and slow devices
+
+The layout follows the screen: a side panel or a bottom sheet for the menu, safe-area padding for notches, and touch targets sized for thumbs. The engine watches its own frame rate. When frames stay slow it steps the rendering cost down, never back up: a lower pixel ratio first, then no bloom. Touch devices start one step down, with smaller shadow maps. Add `?quality=high` or `?quality=low` to the address to pin the rendering cost instead.
+
 ## Tech stack
 
 - React 19 and TypeScript for the menu, HUD, touch controls, and game-over screen
-- Plain three.js for the machine: physically based materials, an environment map for the chrome, soft shadows, and a bloom pass for the neon
-- Every texture is drawn in code at start-up (playfield art, backglass, cabinet sides, carpet, and the dot-matrix score display) — no image files
+- Plain three.js for the machine and the arcade around it: physically based materials, soft shadows, and a light bloom pass for the neon. The reflections in the steel ball and the lacquer are captured from the arcade room itself, so they show its screens and signs
+- Every texture is drawn in code at start-up: the playfield art, backglass, cabinet sides, carpet, fake arcade games, the dot-matrix scoreboard, and the wood grain, brushed steel, rubber and scratch maps that give the materials their wear — no image files
 - Web Audio, synthesised in code at runtime — no audio files
 - Vite for building and development
 - Node's built-in test runner (`node:test`), no separate test framework
@@ -65,7 +69,7 @@ autoplayer can be unit tested without a browser or a canvas:
 
 ```text
 src/game/    the table layout, the physics, the rules and scoring, high scores, and the autoplayer
-src/render/  the three.js engine and its public API, the playfield and cabinet models, procedural textures, keyboard input
+src/render/  the three.js engine and its public API, the playfield, cabinet and arcade room models, procedural textures, keyboard input
 src/ui/      React components for the menu, HUD, touch controls, game-over card, and canvas mount
 src/audio.ts synthesised sound effects
 scripts/     the headless game simulator
